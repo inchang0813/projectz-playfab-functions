@@ -58,7 +58,7 @@ cd D:\PROJECTS\ProjectZ\PlayfabFunctions
 ### 3.2 HTTP Trigger 함수 추가
 
 ```bash
-func new --name EndRun_FarmingDungeon --template "HTTP trigger"
+func new --name EndRun_FarmingDungeon --template "HTTP trigger" --authlevel "function"
 ```
 
 - `--name`: 생성될 함수 이름 (파일/클래스 생성 기준)
@@ -67,8 +67,8 @@ func new --name EndRun_FarmingDungeon --template "HTTP trigger"
 추가로 모드가 늘어나면 같은 규칙으로 생성:
 
 ```bash
-func new --name StartRun_BossRush --template "HTTP trigger"
-func new --name EndRun_BossRush --template "HTTP trigger"
+func new --name StartRun_BossRush --template "HTTP trigger" --authlevel "function"
+func new --name EndRun_BossRush --template "HTTP trigger" --authlevel "function"
 ```
 
 ---

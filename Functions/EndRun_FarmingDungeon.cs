@@ -3,7 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
-namespace PlayfabFunctions;
+namespace AfterHuman.Games.Function;
 
 public class EndRun_FarmingDungeon
 {
