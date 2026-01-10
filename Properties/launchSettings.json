@@ -1,0 +1,9 @@
+{
+  "profiles": {
+    "PlayfabFunctions": {
+      "commandName": "Project",
+      "commandLineArgs": "--port 7000",
+      "launchBrowser": false
+    }
+  }
+}
