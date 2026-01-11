@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
@@ -5,6 +6,12 @@ using Microsoft.Extensions.Logging;
 
 namespace AfterHuman.Games.Function;
 
+/// <summary>
+/// Farming Dungeon 런 시작 Function
+/// - 고유 runId 발급
+/// - 맵 생성용 seed 발급
+/// - 서버 시간 반환
+/// </summary>
 public class StartRun_FarmingDungeon
 {
     private readonly ILogger<StartRun_FarmingDungeon> _logger;
@@ -15,9 +22,113 @@ public class StartRun_FarmingDungeon
     }
 
     [Function("StartRun_FarmingDungeon")]
-    public IActionResult Run([HttpTrigger(AuthorizationLevel.Function, "get", "post")] HttpRequest req)
+    public async Task<IActionResult> Run([HttpTrigger(AuthorizationLevel.Function, "post")] HttpRequest req)
     {
-        _logger.LogInformation("C# HTTP trigger function processed a request.");
-        return new OkObjectResult("Welcome to Azure Functions!");
+        _logger.LogInformation("🏃 StartRun_FarmingDungeon 호출");
+
+        try
+        {
+            // 요청 파싱
+            string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
+            var request = JsonSerializer.Deserialize<StartRunRequest>(requestBody, new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            });
+
+            if (request == null)
+            {
+                _logger.LogWarning("⚠️ 요청 파싱 실패");
+                return new BadRequestObjectResult(new StartRunResponse
+                {
+                    ok = false,
+                    message = "Invalid request format"
+                });
+            }
+
+            // PlayFab Context (추후 추가 가능)
+            // var context = await FunctionContext.ParsePlayFabContext(req);
+            // var playFabId = context.CallerEntityProfile.Lineage.MasterPlayerAccountId;
+
+            // 던전 ID 검증 (개발 단계: 생략 가능)
+            string dungeonId = request.dungeonId ?? "FD_TEST_001";
+            _logger.LogInformation($"📍 DungeonId: {dungeonId}");
+
+            // runId 생성 (고유 식별자)
+            string runId = GenerateRunId();
+            
+            // seed 생성 (맵 생성용)
+            int seed = GenerateSeed();
+            
+            // 서버 시간 (Unix timestamp)
+            long serverTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            // TODO: Redis/Database에 런 상태 저장
+            // await SaveRunStateAsync(runId, dungeonId, serverTime);
+
+            var response = new StartRunResponse
+            {
+                ok = true,
+                runId = runId,
+                seed = seed,
+                serverTime = serverTime,
+                dungeonId = dungeonId,
+                maxDurationSec = 600 // 10분 제한
+            };
+
+            _logger.LogInformation($"✅ 런 시작 성공: RunId={runId}, Seed={seed}");
+            return new OkObjectResult(response);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ StartRun_FarmingDungeon 실패: {ex.Message}");
+            return new ObjectResult(new StartRunResponse
+            {
+                ok = false,
+                message = $"Internal server error: {ex.Message}"
+            })
+            {
+                StatusCode = 500
+            };
+        }
+    }
+
+    /// <summary>
+    /// 고유 RunId 생성
+    /// </summary>
+    private string GenerateRunId()
+    {
+        // 타임스탬프 + GUID로 고유성 보장
+        long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        string guid = Guid.NewGuid().ToString("N").Substring(0, 8);
+        return $"RUN_{timestamp}_{guid}";
+    }
+
+    /// <summary>
+    /// 맵 생성용 시드 생성
+    /// </summary>
+    private int GenerateSeed()
+    {
+        // Random seed 생성 (양수)
+        return Math.Abs(Guid.NewGuid().GetHashCode());
     }
 }
+
+#region DTOs
+
+public class StartRunRequest
+{
+    public string? dungeonId { get; set; }
+}
+
+public class StartRunResponse
+{
+    public bool ok { get; set; }
+    public string? runId { get; set; }
+    public int seed { get; set; }
+    public long serverTime { get; set; }
+    public string? message { get; set; }
+    public string? dungeonId { get; set; }
+    public int maxDurationSec { get; set; }
+}
+
+#endregion
