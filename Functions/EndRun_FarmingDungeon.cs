@@ -1,8 +1,14 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Text.Json;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using AfterHuman.Games.Function.DTOs;
+using AfterHuman.Games.Function.Models;
 
 namespace AfterHuman.Games.Function;
 
@@ -30,15 +36,49 @@ public class EndRun_FarmingDungeon
         {
             // 요청 파싱
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
-            var request = JsonSerializer.Deserialize<EndRunRequest>(requestBody, new JsonSerializerOptions
+            _logger.LogInformation($"📥 요청 본문: {requestBody}");
+
+            EndRunFarmingDungeonRequest? request = null;
+            string? playFabId = null;
+
+            // PlayFab CloudScript 방식 (FunctionArgument wrapper)
+            try
             {
-                PropertyNameCaseInsensitive = true
-            });
+                var playFabRequest = JsonSerializer.Deserialize<PlayFabFunctionRequest>(requestBody, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+                if (playFabRequest?.FunctionArgument is JsonElement argElement)
+                {
+                    var argJson = argElement.GetRawText();
+                    request = JsonSerializer.Deserialize<EndRunFarmingDungeonRequest>(argJson, new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true
+                    });
+                    playFabId = playFabRequest.CallerEntityProfile?.Lineage?.MasterPlayerAccountId;
+                    _logger.LogInformation("☁️ PlayFab CloudScript 방식으로 파싱 성공");
+                }
+            }
+            catch
+            {
+                // PlayFab wrapper 파싱 실패 시 직접 파싱 시도 (로컬 테스트용)
+            }
+
+            // 로컬 테스트 방식 (직접 DTO)
+            if (request == null)
+            {
+                request = JsonSerializer.Deserialize<EndRunFarmingDungeonRequest>(requestBody, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+                _logger.LogInformation("🔧 로컬 테스트 방식으로 파싱 성공");
+            }
 
             if (request == null || string.IsNullOrEmpty(request.runId))
             {
                 _logger.LogWarning("⚠️ 요청 파싱 실패 또는 runId 누락");
-                return new BadRequestObjectResult(new EndRunResponse
+                return new BadRequestObjectResult(new EndRunFarmingDungeonResponse
                 {
                     ok = false,
                     message = "Invalid request: runId is required"
@@ -46,10 +86,10 @@ public class EndRun_FarmingDungeon
             }
 
             _logger.LogInformation($"📍 RunId: {request.runId}, Success: {request.success}, Time: {request.clearTimeSec}s");
-
-            // PlayFab Context (추후 추가)
-            // var context = await FunctionContext.ParsePlayFabContext(req);
-            // var playFabId = context.CallerEntityProfile.Lineage.MasterPlayerAccountId;
+            if (!string.IsNullOrEmpty(playFabId))
+            {
+                _logger.LogInformation($"👤 PlayFabId: {playFabId}");
+            }
 
             // TODO: Redis/Database에서 런 상태 검증
             // var runState = await GetRunStateAsync(request.runId);
@@ -60,7 +100,7 @@ public class EndRun_FarmingDungeon
             if (!ValidateRunData(request))
             {
                 _logger.LogWarning($"⚠️ 런 검증 실패: {request.runId}");
-                return new BadRequestObjectResult(new EndRunResponse
+                return new BadRequestObjectResult(new EndRunFarmingDungeonResponse
                 {
                     ok = false,
                     message = "Run validation failed"
@@ -69,29 +109,27 @@ public class EndRun_FarmingDungeon
 
             // 보상 계산 (서버 로직)
             var rewards = CalculateRewards(request);
-            var currencies = CalculateCurrencies(request);
-            int expGained = CalculateExp(request);
 
             // TODO: PlayFab API로 실제 보상 지급
-            // await GrantRewardsAsync(playFabId, rewards, currencies);
+            // if (!string.IsNullOrEmpty(playFabId) && rewards.Count > 0)
+            // {
+            //     await GrantRewardsAsync(playFabId, rewards);
+            // }
 
-            var response = new EndRunResponse
+            var response = new EndRunFarmingDungeonResponse
             {
                 ok = true,
                 message = request.success ? "Dungeon cleared!" : "Dungeon failed",
-                rewards = rewards,
-                currencies = currencies,
-                expGained = expGained,
-                isNewRecord = false // TODO: 기록 비교 로직
+                rewards = rewards
             };
 
-            _logger.LogInformation($"✅ 런 종료 성공: {rewards.Count}개 아이템, {currencies.Count}개 통화");
+            _logger.LogInformation($"✅ 런 종료 성공: {rewards.Count}개 보상");
             return new OkObjectResult(response);
         }
         catch (Exception ex)
         {
             _logger.LogError($"❌ EndRun_FarmingDungeon 실패: {ex.Message}");
-            return new ObjectResult(new EndRunResponse
+            return new ObjectResult(new EndRunFarmingDungeonResponse
             {
                 ok = false,
                 message = $"Internal server error: {ex.Message}"
@@ -107,19 +145,34 @@ public class EndRun_FarmingDungeon
     /// <summary>
     /// 런 데이터 검증
     /// </summary>
-    private bool ValidateRunData(EndRunRequest request)
+    private bool ValidateRunData(EndRunFarmingDungeonRequest request)
     {
-        // 시간 검증 (너무 빠른 클리어는 부정)
-        if (request.success && request.clearTimeSec < 10)
+        const int RUN_DURATION_SEC = 30; // 30초 테스트용
+        const int TIME_BUFFER_SEC = 10;   // 네트워크 지연 등을 고려한 버퍼
+        
+        // success=true (생존 성공): 진행 시간 근처에서만 허용
+        if (request.success)
         {
-            _logger.LogWarning($"⚠️ 클리어 시간이 너무 짧음: {request.clearTimeSec}s");
+            int minExpectedTime = RUN_DURATION_SEC - TIME_BUFFER_SEC; // 20초
+            if (request.clearTimeSec < minExpectedTime)
+            {
+                _logger.LogWarning($"⚠️ 생존 시간 미달: {request.clearTimeSec}s (최소 {minExpectedTime}s)");
+                return false;
+            }
+        }
+
+        // 최대 시간 검증 (success 관계없이 공통)
+        int maxAllowedTime = RUN_DURATION_SEC + TIME_BUFFER_SEC; // 40초
+        if (request.clearTimeSec > maxAllowedTime)
+        {
+            _logger.LogWarning($"⚠️ 최대 시간 초과: {request.clearTimeSec}s (최대 {maxAllowedTime}s)");
             return false;
         }
 
-        // 최대 시간 초과 검증
-        if (request.clearTimeSec > 600) // 10분
+        // 최소 시간 검증 (비정상적으로 짧은 시간 방지)
+        if (request.clearTimeSec < 1)
         {
-            _logger.LogWarning($"⚠️ 최대 시간 초과: {request.clearTimeSec}s");
+            _logger.LogWarning($"⚠️ 비정상적인 플레이 시간: {request.clearTimeSec}s");
             return false;
         }
 
@@ -136,127 +189,32 @@ public class EndRun_FarmingDungeon
     #region 보상 계산 로직
 
     /// <summary>
-    /// 아이템 보상 계산
+    /// 보상 계산 (아이템 + 통화 통합)
     /// </summary>
-    private List<RewardItem> CalculateRewards(EndRunRequest request)
+    private List<RewardItem> CalculateRewards(EndRunFarmingDungeonRequest request)
     {
         var rewards = new List<RewardItem>();
 
         if (!request.success)
         {
-            // 실패 시 기본 보상만
-            rewards.Add(new RewardItem
-            {
-                itemId = "ITEM_CONSOLATION",
-                amount = 1,
-                displayName = "위로의 상자"
-            });
+            // 생존 실패 시 보상 없음
+            _logger.LogInformation("⚠️ 생존 실패로 인한 보상 없음");
             return rewards;
         }
+
+        // 생존 성공 시 재화 지급
+        rewards.Add(new RewardItem
+        {
+            itemId = "currency_z_coin",
+            amount = 100,
+            displayName = "파밍 재화"
+        });
 
         // ⚠️ 실제로는 던전 데이터, 난이도, 클리어 시간 등을 고려해야 함
         // TODO: 던전 보상 테이블 참조
 
-        // 기본 보상
-        rewards.Add(new RewardItem
-        {
-            itemId = "ITEM_POTION_HP",
-            amount = 3,
-            displayName = "체력 물약"
-        });
-
-        rewards.Add(new RewardItem
-        {
-            itemId = "ITEM_MATERIAL_COMMON",
-            amount = 5,
-            displayName = "일반 재료"
-        });
-
-        // 빠른 클리어 보너스
-        if (request.clearTimeSec < 120)
-        {
-            rewards.Add(new RewardItem
-            {
-                itemId = "ITEM_MATERIAL_RARE",
-                amount = 1,
-                displayName = "희귀 재료"
-            });
-        }
-
         return rewards;
-    }
-
-    /// <summary>
-    /// 통화 보상 계산
-    /// </summary>
-    private Dictionary<string, int> CalculateCurrencies(EndRunRequest request)
-    {
-        var currencies = new Dictionary<string, int>();
-
-        if (!request.success)
-        {
-            currencies["GO"] = 10; // 골드 소량
-            return currencies;
-        }
-
-        // 기본 골드
-        currencies["GO"] = 100;
-
-        // 빠른 클리어 보너스
-        if (request.clearTimeSec < 120)
-        {
-            currencies["GO"] += 50;
-        }
-
-        return currencies;
-    }
-
-    /// <summary>
-    /// 경험치 계산
-    /// </summary>
-    private int CalculateExp(EndRunRequest request)
-    {
-        if (!request.success) return 10;
-
-        int baseExp = 100;
-        
-        // 빠른 클리어 보너스
-        if (request.clearTimeSec < 120)
-        {
-            baseExp = (int)(baseExp * 1.5f);
-        }
-
-        return baseExp;
     }
 
     #endregion
 }
-
-#region DTOs
-
-public class EndRunRequest
-{
-    public string runId { get; set; } = string.Empty;
-    public bool success { get; set; }
-    public int clearTimeSec { get; set; }
-}
-
-public class EndRunResponse
-{
-    public bool ok { get; set; }
-    public string? message { get; set; }
-    public List<RewardItem> rewards { get; set; } = new();
-    public Dictionary<string, int> currencies { get; set; } = new();
-    public int expGained { get; set; }
-    public bool isNewRecord { get; set; }
-    public int rank { get; set; }
-}
-
-public class RewardItem
-{
-    public string itemId { get; set; } = string.Empty;
-    public int amount { get; set; }
-    public string? displayName { get; set; }
-}
-
-#endregion
