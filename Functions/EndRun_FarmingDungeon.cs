@@ -9,6 +9,9 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using AfterHuman.Games.Function.DTOs;
 using AfterHuman.Games.Function.Models;
+using PlayFab;
+using PlayFab.ServerModels;
+using PlayFab.AuthenticationModels;
 
 namespace AfterHuman.Games.Function;
 
@@ -25,6 +28,31 @@ public class EndRun_FarmingDungeon
     public EndRun_FarmingDungeon(ILogger<EndRun_FarmingDungeon> logger)
     {
         _logger = logger;
+        
+        // PlayFab 설정 초기화 (환경 변수에서 읽기)
+        var titleId = Environment.GetEnvironmentVariable("PLAYFAB_TITLE_ID");
+        if (!string.IsNullOrEmpty(titleId))
+        {
+            PlayFabSettings.staticSettings.TitleId = titleId;
+            _logger.LogInformation($"🔧 PlayFab TitleId 설정: {titleId}");
+        }
+        else
+        {
+            _logger.LogWarning("⚠️ PLAYFAB_TITLE_ID 환경 변수가 설정되지 않았습니다!");
+        }
+        
+        // PLAYFAB_SECRET_KEY 또는 PLAYFAB_DEV_SECRET_KEY 모두 지원
+        var secretKey = Environment.GetEnvironmentVariable("PLAYFAB_SECRET_KEY") 
+                        ?? Environment.GetEnvironmentVariable("PLAYFAB_DEV_SECRET_KEY");
+        if (!string.IsNullOrEmpty(secretKey))
+        {
+            PlayFabSettings.staticSettings.DeveloperSecretKey = secretKey;
+            _logger.LogInformation($"🔧 PlayFab SecretKey 설정 완료 (길이: {secretKey.Length})");
+        }
+        else
+        {
+            _logger.LogWarning("⚠️ PLAYFAB_SECRET_KEY 환경 변수가 설정되지 않았습니다!");
+        }
     }
 
     [Function("EndRun_FarmingDungeon")]
@@ -40,6 +68,7 @@ public class EndRun_FarmingDungeon
 
             EndRunFarmingDungeonRequest? request = null;
             string? playFabId = null;
+            string? entityToken = null;
 
             // PlayFab CloudScript 방식 (FunctionArgument wrapper)
             try
@@ -56,8 +85,23 @@ public class EndRun_FarmingDungeon
                     {
                         PropertyNameCaseInsensitive = true
                     });
-                    playFabId = playFabRequest.CallerEntityProfile?.Lineage?.MasterPlayerAccountId;
-                    _logger.LogInformation("☁️ PlayFab CloudScript 방식으로 파싱 성공");
+                    // CloudScript가 전달하는 TitlePlayerAccountId 사용 (Entity.Id와 동일)
+                    playFabId = playFabRequest.CallerEntityProfile?.Lineage?.TitlePlayerAccountId;
+                    // EntityToken 추출 (Economy V2 API용)
+                    entityToken = playFabRequest.TitleAuthenticationContext?.EntityToken;
+                    
+                    if (string.IsNullOrEmpty(playFabId))
+                    {
+                        _logger.LogError("❌ TitlePlayerAccountId를 찾을 수 없습니다. Economy V2 호출 불가.");
+                    }
+                    else if (string.IsNullOrEmpty(entityToken))
+                    {
+                        _logger.LogError("❌ EntityToken을 찾을 수 없습니다. Economy V2 호출 불가.");
+                    }
+                    else
+                    {
+                        _logger.LogInformation($"☁️ PlayFab CloudScript 방식으로 파싱 성공 (Entity: {playFabId})");
+                    }
                 }
             }
             catch
@@ -110,11 +154,27 @@ public class EndRun_FarmingDungeon
             // 보상 계산 (서버 로직)
             var rewards = CalculateRewards(request);
 
-            // TODO: PlayFab API로 실제 보상 지급
-            // if (!string.IsNullOrEmpty(playFabId) && rewards.Count > 0)
-            // {
-            //     await GrantRewardsAsync(playFabId, rewards);
-            // }
+            // PlayFab API로 실제 보상 지급
+            if (!string.IsNullOrEmpty(playFabId) && !string.IsNullOrEmpty(entityToken) && rewards.Count > 0)
+            {
+                var grantResult = await GrantRewardsAsync(playFabId, entityToken, rewards);
+                if (!grantResult)
+                {
+                    _logger.LogWarning("⚠️ 보상 지급 실패 (PlayFab API 오류)");
+                    return new ObjectResult(new EndRunFarmingDungeonResponse
+                    {
+                        ok = false,
+                        message = "Failed to grant rewards"
+                    })
+                    {
+                        StatusCode = 500
+                    };
+                }
+            }
+            else if (string.IsNullOrEmpty(playFabId))
+            {
+                _logger.LogWarning("⚠️ PlayFabId 없음 - 로컬 테스트 모드로 간주");
+            }
 
             var response = new EndRunFarmingDungeonResponse
             {
@@ -186,6 +246,87 @@ public class EndRun_FarmingDungeon
 
     #endregion
 
+    #region PlayFab API 호출
+
+    /// <summary>
+    /// PlayFab에 실제 보상 지급 (Economy V2 방식)
+    /// ⚠️ Economy V2에서는 REST API를 직접 호출해야 함 (Server SDK 제한)
+    /// </summary>
+    private async Task<bool> GrantRewardsAsync(string playFabId, string entityToken, List<RewardItem> rewards)
+    {
+        _logger.LogInformation($"🎁 보상 지급 시작: PlayFabId={playFabId}, 보상개수={rewards.Count}");
+        
+        try
+        {
+            var titleId = PlayFabSettings.staticSettings.TitleId;
+            _logger.LogInformation($"✅ PlayFab 설정 확인: TitleId={titleId}");
+            
+            // Economy V2 REST API 호출 (EntityToken 사용)
+            using var httpClient = new System.Net.Http.HttpClient();
+            httpClient.DefaultRequestHeaders.Add("X-EntityToken", entityToken);
+            
+            foreach (var reward in rewards)
+            {
+                _logger.LogInformation($"📦 처리 중: {reward.friendlyId} x{reward.amount}");
+                
+                // Economy V2 AddInventoryItems API 호출 (Friendly ID는 AlternateId로 전달)
+                // ⚠️ TitlePlayerAccountId 사용 시 title_player_account 타입 사용
+                var requestBody = new
+                {
+                    Entity = new
+                    {
+                        Id = playFabId,
+                        Type = "title_player_account"
+                    },
+                    Item = new
+                    {
+                        AlternateId = new
+                        {
+                            Type = "FriendlyId",
+                            Value = reward.friendlyId
+                        }
+                    },
+                    Amount = reward.amount
+                };
+                
+                var jsonContent = new System.Net.Http.StringContent(
+                    JsonSerializer.Serialize(requestBody),
+                    System.Text.Encoding.UTF8,
+                    "application/json"
+                );
+                
+                var url = $"https://{titleId}.playfabapi.com/Inventory/AddInventoryItems";
+                
+                _logger.LogInformation($"🌐 API 호출: {url}");
+                _logger.LogInformation($"📤 요청: ItemId={reward.friendlyId}, Amount={reward.amount}");
+                
+                var response = await httpClient.PostAsync(url, jsonContent);
+                var responseContent = await response.Content.ReadAsStringAsync();
+                
+                if (!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError($"❌ 아이템 지급 실패: Status={response.StatusCode}");
+                    _logger.LogError($"❌ 응답: {responseContent}");
+                    return false;
+                }
+                
+                _logger.LogInformation($"✅ 아이템 지급 성공: {reward.friendlyId} x{reward.amount}");
+                _logger.LogInformation($"📥 응답: {responseContent}");
+            }
+
+            _logger.LogInformation($"✅ 모든 보상 지급 완료");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError($"❌ GrantRewardsAsync 예외: {ex.Message}");
+            _logger.LogError($"❌ StackTrace: {ex.StackTrace}");
+            return false;
+        }
+    }
+
+    #endregion
+
     #region 보상 계산 로직
 
     /// <summary>
@@ -205,7 +346,7 @@ public class EndRun_FarmingDungeon
         // 생존 성공 시 재화 지급
         rewards.Add(new RewardItem
         {
-            itemId = "currency_z_coin",
+            friendlyId = "currency_z_coin",
             amount = 100,
             displayName = "파밍 재화"
         });
