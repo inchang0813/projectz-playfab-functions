@@ -1,0 +1,32 @@
+# Build outputs
+bin/
+obj/
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local settings (환경 변수는 Azure Portal에서 설정)
+local.settings.json
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+README.md
+README_FunctionUpload.md
+
+# Test files
+test/
+tests/
+
+# Temporary files
+*.tmp
+*.log
+*.swp
+*~
