@@ -7,6 +7,7 @@ using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using AfterHuman.Games.Function.DTOs;
 using AfterHuman.Games.Function.Models;
+using AfterHuman.Games.Function.Services;
 
 namespace AfterHuman.Games.Function;
 
@@ -32,46 +33,14 @@ public class StartRun_FarmingDungeon
 
         try
         {
-            // 요청 파싱
+            // 요청 파싱 (공통 헬퍼 사용)
             string requestBody = await new StreamReader(req.Body).ReadToEndAsync();
             _logger.LogInformation($"📥 요청 본문: {requestBody}");
 
-            StartRunFarmingDungeonRequest? request = null;
-            string? playFabId = null;
-
-            // PlayFab CloudScript 방식 (FunctionArgument wrapper)
-            try
-            {
-                var playFabRequest = JsonSerializer.Deserialize<PlayFabFunctionRequest>(requestBody, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
-
-                if (playFabRequest?.FunctionArgument != null)
-                {
-                    var argJson = playFabRequest.FunctionArgument.GetRawText();
-                    request = JsonSerializer.Deserialize<StartRunFarmingDungeonRequest>(argJson, new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true
-                    });
-                    playFabId = playFabRequest.CallerEntityProfile?.Lineage?.MasterPlayerAccountId;
-                    _logger.LogInformation("☁️ PlayFab CloudScript 방식으로 파싱 성공");
-                }
-            }
-            catch
-            {
-                // PlayFab wrapper 파싱 실패 시 직접 파싱 시도 (로컬 테스트용)
-            }
-
-            // 로컬 테스트 방식 (직접 DTO)
-            if (request == null)
-            {
-                request = JsonSerializer.Deserialize<StartRunFarmingDungeonRequest>(requestBody, new JsonSerializerOptions
-                {
-                    PropertyNameCaseInsensitive = true
-                });
-                _logger.LogInformation("🔧 로컬 테스트 방식으로 파싱 성공");
-            }
+            var (request, playFabId, _) = PlayFabHelper.ParseCloudScriptRequest<StartRunFarmingDungeonRequest>(
+                requestBody, 
+                _logger
+            );
 
             if (request == null)
             {
