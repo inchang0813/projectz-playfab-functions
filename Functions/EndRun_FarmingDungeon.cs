@@ -194,7 +194,7 @@ public class EndRun_FarmingDungeon
     /// <summary>
     /// 보상 계산 (아이템 + 통화 통합)
     /// </summary>
-    private List<RewardItem> CalculateRewards(EndRunFarmingDungeonRequest request)
+    private List<DTOs.RewardItem> CalculateRewards(EndRunFarmingDungeonRequest request)
     {
         var rewards = new List<RewardItem>();
 
@@ -205,10 +205,33 @@ public class EndRun_FarmingDungeon
             return rewards;
         }
 
-        // 생존 성공 시 재화 지급
+        // 클라이언트가 파밍한 아이템 추가
+        if (request.lootedItems != null && request.lootedItems.Count > 0)
+        {
+            _logger.LogInformation($"📦 파밍 아이템 {request.lootedItems.Count}개 처리 중");
+            foreach (var lootedItem in request.lootedItems)
+            {
+                if (string.IsNullOrEmpty(lootedItem.itemId) || lootedItem.amount <= 0)
+                {
+                    _logger.LogWarning($"⚠️ 잘못된 아이템 데이터: ItemId={lootedItem.itemId}, Amount={lootedItem.amount}");
+                    continue;
+                }
+
+                rewards.Add(new RewardItem
+                {
+                    itemId = lootedItem.itemId,
+                    amount = lootedItem.amount,
+                    displayName = lootedItem.itemId // 실제로는 아이템 마스터 데이터에서 가져와야 함
+                });
+                
+                _logger.LogInformation($"✅ 파밍 아이템 추가: {lootedItem.itemId} x{lootedItem.amount} (Container: {lootedItem.containerId})");
+            }
+        }
+
+        // 생존 성공 시 기본 재화 지급
         rewards.Add(new RewardItem
         {
-            friendlyId = "currency_z_coin",
+            itemId = "currency_z_coin",
             amount = 100,
             displayName = "파밍 재화"
         });

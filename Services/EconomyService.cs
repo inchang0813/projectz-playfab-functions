@@ -4,8 +4,8 @@ using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
-using AfterHuman.Games.Function.Models;
 using PlayFab;
+using AfterHuman.Games.Function.DTOs;
 
 namespace AfterHuman.Games.Function.Services;
 
@@ -21,7 +21,10 @@ public class EconomyService
     public EconomyService(ILogger logger)
     {
         _logger = logger;
-        _httpClient = new HttpClient();
+        _httpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(5) // PlayFab API 타임아웃 설정
+        };
     }
 
     /// <summary>
@@ -64,7 +67,7 @@ public class EconomyService
             
             foreach (var reward in rewards)
             {
-                _logger.LogInformation($"📦 처리 중: {reward.friendlyId} x{reward.amount}");
+                _logger.LogInformation($"📦 처리 중: {reward.itemId} x{reward.amount}");
                 
                 // Economy V2 AddInventoryItems API 호출
                 var requestBody = new
@@ -79,7 +82,7 @@ public class EconomyService
                         AlternateId = new
                         {
                             Type = "FriendlyId",
-                            Value = reward.friendlyId
+                            Value = reward.itemId
                         }
                     },
                     Amount = reward.amount
@@ -94,7 +97,7 @@ public class EconomyService
                 var url = $"https://{titleId}.playfabapi.com/Inventory/AddInventoryItems";
                 
                 _logger.LogInformation($"🌐 API 호출: {url}");
-                _logger.LogInformation($"📤 요청: ItemId={reward.friendlyId}, Amount={reward.amount}");
+                _logger.LogInformation($"📤 요청: ItemId={reward.itemId}, Amount={reward.amount}");
                 
                 var response = await _httpClient.PostAsync(url, jsonContent);
                 var responseContent = await response.Content.ReadAsStringAsync();
@@ -106,7 +109,7 @@ public class EconomyService
                     return false;
                 }
                 
-                _logger.LogInformation($"✅ 아이템 지급 성공: {reward.friendlyId} x{reward.amount}");
+                _logger.LogInformation($"✅ 아이템 지급 성공: {reward.itemId} x{reward.amount}");
                 _logger.LogInformation($"📥 응답: {responseContent}");
             }
 
