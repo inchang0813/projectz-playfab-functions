@@ -148,7 +148,7 @@ public class EndRun_FarmingDungeon
     /// </summary>
     private bool ValidateRunData(EndRunFarmingDungeonRequest request)
     {
-        const int RUN_DURATION_SEC = 30; // 30초 테스트용
+        const int RUN_DURATION_SEC = 300; // 30초 테스트용
         const int TIME_BUFFER_SEC = 10;   // 네트워크 지연 등을 고려한 버퍼
         
         // success=true (생존 성공): 진행 시간 근처에서만 허용

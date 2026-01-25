@@ -80,7 +80,7 @@ public class StartRun_FarmingDungeon
                 seed = seed,
                 serverTime = serverTime,
                 dungeonId = dungeonId,
-                runDurationSec = 30 // 30초 테스트용
+                runDurationSec = 300 // 300초 테스트용
             };
 
             _logger.LogInformation($"✅ 런 시작 성공: RunId={runId}, Seed={seed}");
